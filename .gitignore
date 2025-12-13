@@ -1,4 +1,4 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,21 +22,22 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# --- Virtual Environments ---
 .venv/
 venv/
 env/
 ENV/
 
-# Environment variables
-.env
-.venv
-
-# Project specific
-DATA/
+# --- Project Specific Data & Config ---
+Music_DCM/
 music_library/
+DATA/
 features/
 models/
+scripts/repro_model.py
+.env
+
+# --- Data Files ---
 *.csv
 *.json
 *.pkl
@@ -44,8 +45,13 @@ models/
 *.model
 *.npy
 *.npz
+*.db
+*.sqlite3
+db.sqlite3
+db.sqlite3-journal
+music_library.db
 
-# Audio files
+# --- Audio Files ---
 *.aif
 *.aiff
 *.aifc
@@ -62,84 +68,28 @@ models/
 *.wma
 *.wv
 *.webm
-*.flac
-*.ogg
 
-# IDE specific
+# --- IDE & Editors ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
-Thumbs.db
 
-# Logs and outputs
+# --- Logs & Testing ---
 *.log
 logs/
 output/
-
-# Jupyter Notebook
-.ipynb_checkpoints/
-
-# Local development settings
-local_settings.py
-
-# Project configuration
-config.ini
-
-# Database
-*.db
-*.sqlite3
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-*.log
-
-# Local development
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Testing
 .coverage
 htmlcov/
 .pytest_cache/
 .tox/
 .nox/
 
+# --- Jupyter ---
+.ipynb_checkpoints/ 
 
-test_playlists/ 
 
-# Virtual environments
-.venv/
-venv/
-
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Distribution / packaging
-*.egg-info/
-.eggs/
-build/
-dist/
-
-# Logs and databases
-logs/
-*.log
-
-# Local development
-.vscode/
-.idea/
-.DS_Store
+#pyenv local 
+.python-version

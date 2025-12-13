@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 class SongRecommender:
     """Song recommendation engine using audio feature similarity."""
     
-    def __init__(self, features_path: str = None, model_path: str = None):
+    def __init__(self, features_path: str = None, model_path: str = None, feature_weights: Dict[str, float] = None):
         """
         Initialize the recommender with features and/or a pre-trained model.
         
@@ -54,6 +54,14 @@ class SongRecommender:
         self.pca = None
         self.model = None
         self.feature_columns = None
+        # Default weights: Boost Timbre (MFCC), reduce Key (Chroma) slightly
+        self.feature_weights = feature_weights or {
+            'mfcc': 1.2,
+            'chroma': 0.8,
+            'tempo': 1.0,
+            'spectral': 1.0,
+            'default': 1.0
+        }
         
         # Debug info
         logger.debug(f"Initializing SongRecommender with features_path={features_path}, model_path={model_path}")
@@ -78,7 +86,7 @@ class SongRecommender:
                 self.features_df = pd.DataFrame()
             
             logger.debug("SongRecommender initialization complete")
-            n
+
         except Exception as e:
             logger.error(f"Error initializing SongRecommender: {str(e)}")
             logger.debug(f"Features DataFrame: {self.features_df}")
@@ -148,9 +156,28 @@ class SongRecommender:
         if self.features_df is None:
             raise ValueError("No features loaded. Call load_features() first.")
         
-        # Scale features
+        # Scale features first
         logger.info("Scaling features...")
         X = self.scaler.fit_transform(self.features_df[self.feature_columns])
+        
+        # Apply feature weights to the scaled features
+        logger.info("Applying feature weights...")
+        
+        # We need to map column indices to names since X is a numpy array
+        # The order of columns in X matches self.feature_columns
+        for i, col in enumerate(self.feature_columns):
+            weight = self.feature_weights['default']
+            if 'mfcc' in col.lower():
+                weight = self.feature_weights['mfcc']
+            elif 'chroma' in col.lower():
+                weight = self.feature_weights['chroma']
+            elif 'tempo' in col.lower():
+                weight = self.feature_weights['tempo']
+            elif 'spectral' in col.lower() or 'centroid' in col.lower() or 'bandwidth' in col.lower():
+                weight = self.feature_weights['spectral']
+            
+            if weight != 1.0:
+                X[:, i] *= weight
         
         # Apply PCA if requested
         if n_components is not None:
@@ -161,12 +188,12 @@ class SongRecommender:
         
         return X
     
-    def train_model(self, n_neighbors: int = 5, metric: str = 'cosine') -> None:
+    def train_model(self, n_neighbors: int = 5, metric: str = 'cosine', n_components: float = 0.95) -> None:
         """Train the KNN model on the preprocessed features."""
         if self.features_df is None:
             raise ValueError("No features loaded. Call load_features() first.")
         
-        X = self.preprocess_features()
+        X = self.preprocess_features(n_components=n_components)
         
         logger.info(f"Training KNN model with {n_neighbors} neighbors...")
         self.model = NearestNeighbors(
@@ -226,10 +253,9 @@ class SongRecommender:
         song_idx = song_match.index[0]
         
         try:
-            # Get the song's features and find nearest neighbors
-            features = self.pca.transform(self.scaler.transform(
-                self.features_df[self.feature_columns]
-            ))
+            # Get the song's features - reuse preprocess_features to ensure consistent weighting/scaling
+            # We assume n_components is consistent with how the model was trained (stored in self.pca)
+            features = self.preprocess_features(n_components=self.pca.n_components if self.pca else None)
             
             distances, indices = self.model.kneighbors(
                 features[song_idx].reshape(1, -1),
