@@ -183,18 +183,24 @@ def extract_features(audio_path: Union[str, Path]) -> Dict[str, Union[float, lis
         logger.error(f"Error processing {audio_path}: {str(e)}")
         return {}
 
+import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+
 def process_directory(
     input_dir: Union[str, Path],
     output_file: Optional[Union[str, Path]] = None,
-    force: bool = False
+    force: bool = False,
+    n_workers: int = None
 ) -> pd.DataFrame:
     """
-    Process all audio files in a directory and extract features.
+    Process all audio files in a directory and extract features using parallel processing.
     
     Args:
         input_dir: Directory containing audio files
         output_file: Optional path to save features as CSV/JSON
         force: If True, overwrite existing output file
+        n_workers: Number of worker processes (default: number of CPU cores)
         
     Returns:
         DataFrame containing extracted features
@@ -230,36 +236,63 @@ def process_directory(
             logger.warning(f"Error loading existing features: {e}")
             features_list = []
     
-    # Process audio files
+    # Identify files that need processing
+    files_to_process = [f for f in audio_files if str(f.resolve()) not in existing_files]
+    
+    if not files_to_process:
+        logger.info("All files already processed.")
+        return pd.DataFrame(features_list)
+        
     processed_count = 0
-    skipped_count = 0
     error_count = 0
     
-    for audio_file in tqdm(audio_files, desc="Extracting features"):
-        file_path = str(audio_file.resolve())
-        
-        # Skip if already processed
-        if file_path in existing_files:
-            skipped_count += 1
-            continue
-        
-        # Extract features
-        features = extract_features(audio_file)
-        
-        if features:
-            features_list.append(features)
-            processed_count += 1
+    # Determine number of workers
+    if n_workers is None:
+        # Leave one core free for UI/System if possible, but minimum 1
+        cpu_count = multiprocessing.cpu_count()
+        n_workers = max(1, cpu_count - 1)
+    
+    logger.info(f"Starting parallel feature extraction with {n_workers} workers for {len(files_to_process)} files")
+    
+    # Use ProcessPoolExecutor for parallel processing
+    new_features = []
+    
+    try:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            # Create a dictionary to map futures to file paths for error reporting
+            future_to_file = {executor.submit(extract_features, f): f for f in files_to_process}
             
-            # Save periodically (every 10 files)
-            if processed_count % 10 == 0 and output_file:
-                save_features(features_list, output_file)
-        else:
-            error_count += 1
+            # Process results as they complete with a progress bar
+            for future in tqdm(concurrent.futures.as_completed(future_to_file), total=len(files_to_process), desc="Extracting features"):
+                file_path = future_to_file[future]
+                try:
+                    features = future.result()
+                    if features:
+                        new_features.append(features)
+                        processed_count += 1
+                    else:
+                        error_count += 1
+                except Exception as e:
+                    logger.error(f"Worker failed for {file_path}: {e}")
+                    error_count += 1
+                
+                # Periodically save results (every 50 files) to avoid data loss on crash
+                if processed_count % 50 == 0 and output_file and new_features:
+                    # Combine old and new (files processed so far)
+                    current_results = features_list + new_features
+                    save_features(current_results, output_file)
+                    
+    except KeyboardInterrupt:
+        logger.warning("Processing interrupted by user. Saving progress...")
+        executor.shutdown(wait=False, cancel_futures=True)
+        
+    # Combine all features
+    features_list.extend(new_features)
     
     logger.info(
         f"Feature extraction complete. "
-        f"Processed: {processed_count}, "
-        f"Skipped: {skipped_count}, "
+        f"Newly Processed: {processed_count}, "
+        f"Skipped (Existing): {len(existing_files)}, "
         f"Errors: {error_count}"
     )
     

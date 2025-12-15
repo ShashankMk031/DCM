@@ -1,82 +1,74 @@
-import os
-from kivy.core.audio import SoundLoader
-from kivy.clock import Clock
-from kivy.properties import (
-    ObjectProperty, NumericProperty, StringProperty, BooleanProperty, ListProperty
-)
-from kivy.event import EventDispatcher
-from kivy.logger import Logger
 
-class MusicPlayer(EventDispatcher):
-    """A music player that handles audio playback."""
+import os
+import pygame
+import threading
+import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class MusicPlayer:
+    """A music player that handles audio playback using Pygame."""
     
-    # Properties
-    current_song = ObjectProperty(None, allownone=True)
-    current_position = NumericProperty(0.0)
-    duration = NumericProperty(0.0)
-    volume = NumericProperty(1.0)
-    is_playing = BooleanProperty(False)
-    playlist = ListProperty([])
-    current_index = NumericProperty(-1)
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.sound = None
-        self._update_ev = None
-        self.on_song_end_callback = None  # Callback for when a song ends
-        self.bind(volume=self._on_volume)
-    
-    def _on_volume(self, instance, value):
-        """Update volume when the volume property changes."""
-        if self.sound:
-            self.sound.volume = value
-    
-    def _update(self, dt):
-        """Update the current position of the song."""
-        if self.sound and self.is_playing:
-            self.current_position = self.sound.get_pos()
-            
-            # Check if song has ended
-            if self.sound.state == 'stop' and self.current_position > 0 and \
-               abs(self.duration - self.current_position) < 0.1:
-                # Store callback before calling next() as it might trigger a new song load
-                callback = self.on_song_end_callback
-                self.next()
-                # If we have a callback and the song ended naturally, call it
-                if callback and self.current_position > 0:
-                    callback()
-    
+    def __init__(self):
+        # Initialize pygame mixer
+        pygame.mixer.init()
+        
+        # State properties
+        self.current_song = None
+        self.is_playing = False
+        self.volume = 1.0
+        self.playlist = []
+        self.current_index = -1
+        self._duration = 0.0 # Cached duration
+        
+    @property
+    def duration(self):
+        """Get the duration of the current song in seconds."""
+        # Pygame doesn't give duration directly easily for streams, 
+        # so we rely on what was set during load, or 0.
+        return self._duration
+
+    @property
+    def current_position(self):
+        """Get current playback position in seconds."""
+        if not self.is_playing:
+            return 0.0
+        # get_pos returns milliseconds since play started
+        # Note: This resets on pause/unpause in some versions, but usually accurate enough for simple UI
+        try:
+            return pygame.mixer.music.get_pos() / 1000.0
+        except:
+            return 0.0
+
     def load_song(self, file_path):
         """Load a song from file path."""
         if not os.path.exists(file_path):
-            Logger.error(f"MusicPlayer: File not found: {file_path}")
+            logger.error(f"MusicPlayer: File not found: {file_path}")
             return False
             
-        # Stop current song if playing
-        self.stop()
-        
         try:
-            self.sound = SoundLoader.load(file_path)
-            if not self.sound:
-                Logger.error(f"MusicPlayer: Could not load file: {file_path}")
-                return False
-                
+            pygame.mixer.music.load(file_path)
             self.current_song = file_path
-            self.duration = self.sound.length
-            self.current_position = 0.0
-            self.is_playing = False
             
-            # Set volume
-            self.sound.volume = self.volume
-            
-            # Start update clock if not already running
-            if not self._update_ev:
-                self._update_ev = Clock.schedule_interval(self._update, 0.1)
+            # Try to get duration using Mutagen as Pygame doesn't provide it reliably
+            try:
+                from mutagen import File
+                audio = File(file_path)
+                if audio and audio.info:
+                    self._duration = audio.info.length
+                else:
+                    self._duration = 0.0
+            except:
+                self._duration = 0.0
                 
+            self.is_playing = False
             return True
             
         except Exception as e:
-            Logger.error(f"MusicPlayer: Error loading song: {str(e)}")
+            logger.error(f"MusicPlayer: Error loading song: {str(e)}")
             return False
     
     def play(self, file_path=None):
@@ -85,77 +77,57 @@ class MusicPlayer(EventDispatcher):
             if not self.load_song(file_path):
                 return False
         
-        if not self.sound:
+        if not self.current_song:
             return False
             
-        if self.sound.state == 'play':
-            return True
-            
         try:
-            self.sound.play()
+            pygame.mixer.music.play()
             self.is_playing = True
             return True
         except Exception as e:
-            Logger.error(f"MusicPlayer: Error playing song: {str(e)}")
+            logger.error(f"MusicPlayer: Error playing song: {str(e)}")
             return False
     
     def pause(self):
         """Pause the current song."""
-        if self.sound and self.sound.state == 'play':
-            self.sound.stop()
+        if self.is_playing:
+            pygame.mixer.music.pause()
             self.is_playing = False
+            return True
+        return False
+
+    def unpause(self):
+        """Resume the current song."""
+        if not self.is_playing and self.current_song:
+            pygame.mixer.music.unpause()
+            self.is_playing = True
             return True
         return False
     
     def stop(self):
-        """Stop playback and reset position."""
-        if self.sound:
-            self.sound.stop()
-            self.sound.unload()
-            self.sound = None
-            
-        self.current_position = 0.0
-        self.duration = 0.0
+        """Stop playback."""
+        pygame.mixer.music.stop()
         self.is_playing = False
-        
-        # Don't unschedule the update event here, as we might load a new song
-        
         return True
     
     def seek(self, position):
         """Seek to a specific position in the song."""
-        if self.sound and 0 <= position <= self.duration:
-            try:
-                self.sound.seek(position)
-                self.current_position = position
-                return True
-            except Exception as e:
-                Logger.error(f"MusicPlayer: Error seeking: {str(e)}")
-        return False
+        try:
+            pygame.mixer.music.set_pos(position)
+            return True
+        except Exception as e:
+            logger.error(f"MusicPlayer: Error seeking: {str(e)}")
+            return False
     
     # Playlist management
-    def set_playlist(self, song_paths, start_index=0):
-        """Set the playlist and optionally start playing from start_index."""
-        if not song_paths:
-            return False
-            
-        self.playlist = song_paths
-        self.current_index = max(0, min(start_index, len(song_paths) - 1))
-        
-        # Load the first song
-        return self.load_song(self.playlist[self.current_index])
-    
     def next(self):
         """Play the next song in the playlist."""
         if not self.playlist:
             return False
             
         next_index = (self.current_index + 1) % len(self.playlist)
-        if next_index == self.current_index:
-            return False  # Only one song in playlist
-            
         self.current_index = next_index
-        return self.load_song(self.playlist[self.current_index]) and self.play()
+        return self.play(self.playlist[self.current_index])
     
     def previous(self):
         """Play the previous song in the playlist."""
@@ -163,24 +135,13 @@ class MusicPlayer(EventDispatcher):
             return False
             
         prev_index = (self.current_index - 1) % len(self.playlist)
-        if prev_index == self.current_index:
-            return False  # Only one song in playlist
-            
         self.current_index = prev_index
-        return self.load_song(self.playlist[self.current_index]) and self.play()
-    
-    def clear_playlist(self):
-        """Clear the current playlist."""
-        self.stop()
-        self.playlist = []
-        self.current_index = -1
+        return self.play(self.playlist[self.current_index])
     
     def cleanup(self):
         """Clean up resources."""
         self.stop()
-        if self._update_ev:
-            self._update_ev.cancel()
-            self._update_ev = None
+        pygame.mixer.quit()
 
 # Global player instance
 player = MusicPlayer()

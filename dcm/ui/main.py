@@ -47,7 +47,9 @@ from kivymd.uix.filemanager import MDFileManager
 
 # Import our modules
 from dcm.database import db
+from dcm.database import db
 from dcm.player import player as music_player
+from dcm.core.metadata import get_album_art, get_metadata
 
 # Add the project root to the path to import the core models 
 # Add the project root to the path to impor thte core models 
@@ -70,6 +72,8 @@ class DCMApp(MDApp):
     
     # Player state properties
     current_song = StringProperty('No song selected')
+    current_song_title = StringProperty('No song playing') 
+    album_art_path = StringProperty('')
     current_artist = StringProperty('')
     current_album = StringProperty('')
     is_playing = BooleanProperty(False)
@@ -1177,9 +1181,19 @@ class DCMApp(MDApp):
                     
                 if music_player.play(file_path):
                     # Update UI with song info
-                    self.current_song = song_data.get('title', os.path.basename(file_path)) if song_data else os.path.basename(file_path)
-                    self.current_artist = song_data.get('artist', 'Unknown Artist') if song_data else 'Unknown Artist'
-                    self.current_album = song_data.get('album', 'Unknown Album') if song_data else 'Unknown Album'
+                    self.current_song = os.path.basename(file_path)
+                    
+                    # Extract metadata if not provided
+                    if not song_data:
+                        song_data = get_metadata(file_path)
+                        
+                    self.current_song_title = song_data.get('title', os.path.basename(file_path))
+                    self.current_artist = song_data.get('artist', 'Unknown Artist')
+                    self.current_album = song_data.get('album', 'Unknown Album')
+                    
+                    # Update Album Art
+                    self.album_art_path = get_album_art(file_path) or ''
+                    
                     self.total_time = music_player.duration
                     self.is_playing = True
                     
@@ -1218,6 +1232,10 @@ class DCMApp(MDApp):
             self.show_error_dialog("Playback Error", error_msg)
             return False
     
+    def toggle_play(self):
+        """Alias for toggle_play_pause to match KV file."""
+        self.toggle_play_pause()
+
     def toggle_play_pause(self):
         """Toggle between play and pause."""
         if music_player.is_playing:

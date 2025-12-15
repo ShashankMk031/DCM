@@ -7,25 +7,17 @@ tqdm==4.67.1
 python-dotenv==0.21.1
 click==8.2.1
 
-# UI Dependencies
-# Core UI Framework
-Kivy==2.2.1
-Kivy-Garden>=0.1.5
-KivyMD==1.1.1
-
-# Image Processing
-Pillow>=10.0.0  # Latest stable version
-
-# Required for Kivy
-pygments>=2.0.1
-pypiwin32; sys_platform == 'win32'
-kivy-deps.angle; sys_platform == 'win32'
-kivy-deps.sdl2; sys_platform == 'win32'
+# Web UI Dependencies
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9
+pygame>=2.5.0
 
 # Audio Processing
 librosa==0.11.0
 soundfile==0.13.1
 soxr==0.5.0
+mutagen>=1.45.1
 
 # Development
 pytest==6.2.5

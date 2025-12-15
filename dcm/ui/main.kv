@@ -348,7 +348,52 @@
                         pos_hint: {'center_x': 0.5}
                         on_release: app.save_settings()
         
-        # Custom Navigation Bar
+        # Now Playing Bar
+        MDBoxLayout:
+            id: now_playing_bar
+            size_hint_y: None
+            height: '64dp' if app.current_song != 'No song selected' else '0dp'
+            padding: '4dp'
+            spacing: '10dp'
+            md_bg_color: 0.95, 0.95, 0.95, 1
+            elevation: 10
+            opacity: 1 if app.current_song != 'No song selected' else 0
+            
+            # Album Art
+            AsyncImage:
+                id: album_art
+                source: app.album_art_path if app.album_art_path else 'assets/default_album_art.png'
+                size_hint: None, None
+                size: '56dp', '56dp'
+                pos_hint: {'center_y': 0.5}
+                
+            # Song Info
+            MDBoxLayout:
+                orientation: 'vertical'
+                pos_hint: {'center_y': 0.5}
+                spacing: '2dp'
+                
+                MDLabel:
+                    text: app.current_song_title
+                    bold: True
+                    font_style: 'Subtitle1'
+                    theme_text_color: 'Primary'
+                    shorten: True
+                    shorten_from: 'right'
+                    
+                MDLabel:
+                    text: app.current_artist
+                    font_style: 'Caption'
+                    theme_text_color: 'Secondary'
+                    shorten: True
+                    shorten_from: 'right'
+            
+            # Controls
+            MDIconButton:
+                icon: 'play' if not app.is_playing else 'pause'
+                pos_hint: {'center_y': 0.5}
+                on_release: app.toggle_play()
+        
         MDBoxLayout:
             size_hint_y: None
             height: '56dp'
