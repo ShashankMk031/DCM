@@ -51,7 +51,43 @@ def get_audio_files(directory: Union[str, Path]) -> List[Path]:
     
     return sorted(audio_files)
 
-def extract_features(audio_path: Union[str, Path]) -> Dict[str, Union[float, list]]:
+def load_audio_ffmpeg(audio_path: Union[str, Path], sr: int = SAMPLE_RATE) -> tuple[np.ndarray, int]:
+    """
+    Load audio using ffmpeg subprocess for better compatibility with M4A/AAC formats.
+    This bypasses librosa's audioread fallback which segfaults on macOS.
+    
+    Args:
+        audio_path: Path to the audio file.
+        sr: Target sampling rate.
+        
+    Returns:
+        A tuple containing:
+            - y: Audio time series as numpy array (float32, normalized to [-1, 1]).
+            - sr: Sampling rate of `y`.
+    """
+    import subprocess
+    
+    cmd = [
+        'ffmpeg', '-i', str(audio_path),
+        '-f', 's16le',           # 16-bit signed little-endian PCM
+        '-acodec', 'pcm_s16le',
+        '-ar', str(sr),          # Sample rate
+        '-ac', '1',              # Mono
+        '-v', 'quiet',           # Suppress output
+        '-'                      # Output to stdout
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True)
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed to decode {audio_path}: {result.stderr.decode()}")
+    
+    # Convert bytes to numpy array
+    y = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    
+    return y, sr
+
+def extract_features(audio_path: Union[str, Path]) -> Optional[Dict]:
     """
     Extract audio features from a single audio file with optimizations for Indian music.
     
@@ -73,12 +109,12 @@ def extract_features(audio_path: Union[str, Path]) -> Dict[str, Union[float, lis
     }
     
     try:
-        # Try loading with different backends if needed
-        try:
+        # Use ffmpeg for M4A/AAC files (more stable than audioread)
+        if audio_path.suffix.lower() in ['.m4a', '.aac', '.mp4']:
+            y, sr = load_audio_ffmpeg(audio_path, sr=SAMPLE_RATE)
+        else:
+            # Use librosa for other formats (FLAC, MP3, WAV, OGG)
             y, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            logger.warning(f"PySoundFile failed. Trying audioread instead.")
-            y, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, res_type='kaiser_fast')
         
         # Extract features
         features = {}
@@ -121,55 +157,23 @@ def extract_features(audio_path: Union[str, Path]) -> Dict[str, Union[float, lis
             features[f'mfcc_{i+1}_mean'] = float(np.mean(mfcc[i]))
             features[f'mfcc_{i+1}_std'] = float(np.std(mfcc[i]))
         
-        # Enhanced Chroma features for Indian classical music
-        chroma = librosa.feature.chroma_stft(
-            y=y,
-            sr=sr,
-            n_chroma=N_CHROMA,
-            n_fft=N_FFT,
-            hop_length=HOP_LENGTH,
-            tuning=0.0,  # Standard tuning
-            norm=2      # Normalize each chroma band
-        )
-        for i in range(chroma.shape[0]):
-            features[f'chroma_{i+1}_mean'] = float(np.mean(chroma[i, :]))
-            features[f'chroma_{i+1}_std'] = float(np.std(chroma[i, :]))
+        # Chroma features - DISABLED due to librosa segfault on macOS for large files
+        # Using placeholder values until a fix is found
+        # TODO: Re-enable when librosa chroma issue is resolved
+        for i in range(12):
+            features[f'chroma_{i+1}_mean'] = 0.0
+            features[f'chroma_{i+1}_std'] = 0.0
         
-        # Tempo with Indian music optimization
-        tempo, _ = librosa.beat.beat_track(
-            y=y,
-            sr=sr,
-            trim=False,
-            start_bpm=80,  # Common starting BPM for Indian music
-            tightness=100   # Tighter tracking for Indian rhythms
-        )
-        features['tempo'] = float(tempo)
+        # Tempo - DISABLED due to librosa segfault on macOS for large files
+        # TODO: Re-enable when librosa beat_track issue is resolved
+        features['tempo'] = 120.0  # Default placeholder
         
-        # Indian music specific features
-        try:
-            # Harmonic-percussive source separation
-            y_harmonic, y_percussive = librosa.effects.hpss(y)
-            
-            # Tonic detection (approximate for Indian music)
-            tonic_freq = librosa.estimate_tuning(y=y_harmonic, sr=sr)
-            features['tonic_deviation'] = float(tonic_freq)  # Deviation from A4=440Hz
-            
-            # Rhythm features
-            onset_env = librosa.onset.onset_strength(y=y_percussive, sr=sr)
-            pulse = librosa.beat.plp(onset_envelope=onset_env, sr=sr)
-            features['rhythm_regularity'] = float(np.mean(pulse))  # Higher = more regular rhythm
-            
-            # Detect if the music has a drone (common in Indian classical)
-            spectral_flatness = librosa.feature.spectral_flatness(y=y_harmonic)
-            features['drone_likelihood'] = float(np.mean(1 - spectral_flatness))  # Lower = more drone-like
-            
-        except Exception as e:
-            logger.warning(f"Could not extract Indian music features: {str(e)}")
-            features.update({
-                'tonic_deviation': 0.0,
-                'rhythm_regularity': 0.0,
-                'drone_likelihood': 0.0
-            })
+        # Indian music specific features - DISABLED due to librosa segfault
+        # HPSS, onset detection, and related features crash on macOS
+        # TODO: Re-enable when librosa stability issues are resolved
+        features['tonic_deviation'] = 0.0
+        features['rhythm_regularity'] = 0.0
+        features['drone_likelihood'] = 0.0
         
         # Add file metadata
         features['file_path'] = str(audio_path.resolve())
@@ -252,40 +256,60 @@ def process_directory(
         cpu_count = multiprocessing.cpu_count()
         n_workers = max(1, cpu_count - 1)
     
-    logger.info(f"Starting parallel feature extraction with {n_workers} workers for {len(files_to_process)} files")
-    
-    # Use ProcessPoolExecutor for parallel processing
     new_features = []
     
-    try:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            # Create a dictionary to map futures to file paths for error reporting
-            future_to_file = {executor.submit(extract_features, f): f for f in files_to_process}
-            
-            # Process results as they complete with a progress bar
-            for future in tqdm(concurrent.futures.as_completed(future_to_file), total=len(files_to_process), desc="Extracting features"):
-                file_path = future_to_file[future]
-                try:
-                    features = future.result()
-                    if features:
-                        new_features.append(features)
-                        processed_count += 1
-                    else:
-                        error_count += 1
-                except Exception as e:
-                    logger.error(f"Worker failed for {file_path}: {e}")
-                    error_count += 1
-                
-                # Periodically save results (every 50 files) to avoid data loss on crash
-                if processed_count % 50 == 0 and output_file and new_features:
-                    # Combine old and new (files processed so far)
-                    current_results = features_list + new_features
-                    save_features(current_results, output_file)
-                    
-    except KeyboardInterrupt:
-        logger.warning("Processing interrupted by user. Saving progress...")
-        executor.shutdown(wait=False, cancel_futures=True)
+    # Sequential processing mode (n_workers=1) - more stable on macOS
+    if n_workers == 1:
+        logger.info(f"Starting sequential feature extraction for {len(files_to_process)} files")
         
+        for file_path in tqdm(files_to_process, desc="Extracting features"):
+            try:
+                features = extract_features(file_path)
+                if features:
+                    new_features.append(features)
+                    processed_count += 1
+                else:
+                    error_count += 1
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {e}")
+                error_count += 1
+            
+            # Periodically save results (every 50 files) to avoid data loss
+            if processed_count % 50 == 0 and output_file and new_features:
+                current_results = features_list + new_features
+                save_features(current_results, output_file)
+    else:
+        # Parallel processing mode
+        logger.info(f"Starting parallel feature extraction with {n_workers} workers for {len(files_to_process)} files")
+        
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                # Create a dictionary to map futures to file paths for error reporting
+                future_to_file = {executor.submit(extract_features, f): f for f in files_to_process}
+                
+                # Process results as they complete with a progress bar
+                for future in tqdm(concurrent.futures.as_completed(future_to_file), total=len(files_to_process), desc="Extracting features"):
+                    file_path = future_to_file[future]
+                    try:
+                        features = future.result()
+                        if features:
+                            new_features.append(features)
+                            processed_count += 1
+                        else:
+                            error_count += 1
+                    except Exception as e:
+                        logger.error(f"Worker failed for {file_path}: {e}")
+                        error_count += 1
+                    
+                    # Periodically save results (every 50 files) to avoid data loss on crash
+                    if processed_count % 50 == 0 and output_file and new_features:
+                        current_results = features_list + new_features
+                        save_features(current_results, output_file)
+                        
+        except KeyboardInterrupt:
+            logger.warning("Processing interrupted by user. Saving progress...")
+            executor.shutdown(wait=False, cancel_futures=True)
+    
     # Combine all features
     features_list.extend(new_features)
     
@@ -373,6 +397,7 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--output', help='Output file (CSV or JSON)', default='audio_features.csv')
     parser.add_argument('-f', '--force', action='store_true', help='Overwrite existing output file')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('-w', '--workers', type=int, default=None, help='Number of worker processes (default: CPU count, use 1 for sequential)')
     
     args = parser.parse_args()
     
@@ -381,7 +406,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
     
     # Process the directory
-    df = process_directory(args.input_dir, args.output, args.force)
+    df = process_directory(args.input_dir, args.output, args.force, n_workers=args.workers)
     
     if not df.empty:
         print(f"\nExtracted features for {len(df)} audio files.")
