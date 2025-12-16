@@ -48,10 +48,18 @@ class MusicPlayer:
         if not os.path.exists(file_path):
             logger.error(f"MusicPlayer: File not found: {file_path}")
             return False
+        
+        # For M4A/AAC files, transcode to WAV first (pygame has issues with these)
+        actual_file = file_path
+        if file_path.lower().endswith(('.m4a', '.aac', '.mp4')):
+            actual_file = self._transcode_to_wav(file_path)
+            if actual_file is None:
+                logger.error(f"MusicPlayer: Failed to transcode {file_path}")
+                return False
             
         try:
-            pygame.mixer.music.load(file_path)
-            self.current_song = file_path
+            pygame.mixer.music.load(actual_file)
+            self.current_song = file_path  # Store original path for display
             
             # Try to get duration using Mutagen as Pygame doesn't provide it reliably
             try:
@@ -70,6 +78,49 @@ class MusicPlayer:
         except Exception as e:
             logger.error(f"MusicPlayer: Error loading song: {str(e)}")
             return False
+    
+    def _transcode_to_wav(self, file_path):
+        """Transcode M4A/AAC to temporary WAV file using ffmpeg."""
+        import subprocess
+        import tempfile
+        import hashlib
+        
+        # Create a deterministic temp file name based on the source path
+        path_hash = hashlib.md5(file_path.encode()).hexdigest()[:12]
+        temp_dir = tempfile.gettempdir()
+        wav_path = os.path.join(temp_dir, f"dcm_player_{path_hash}.wav")
+        
+        # If already transcoded, reuse it
+        if os.path.exists(wav_path):
+            logger.debug(f"Using cached WAV: {wav_path}")
+            return wav_path
+        
+        logger.info(f"Transcoding to WAV: {os.path.basename(file_path)}")
+        
+        try:
+            cmd = [
+                'ffmpeg', '-y',  # Overwrite output
+                '-i', file_path,
+                '-acodec', 'pcm_s16le',
+                '-ar', '44100',
+                '-ac', '2',  # Stereo
+                '-v', 'quiet',
+                wav_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            
+            if result.returncode == 0 and os.path.exists(wav_path):
+                return wav_path
+            else:
+                logger.error(f"ffmpeg failed: {result.stderr.decode()}")
+                return None
+                
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg timeout")
+            return None
+        except Exception as e:
+            logger.error(f"Transcoding error: {e}")
+            return None
     
     def play(self, file_path=None):
         """Play the current or specified song."""
