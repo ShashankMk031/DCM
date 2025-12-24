@@ -34,14 +34,64 @@ class MusicPlayer:
     @property
     def current_position(self):
         """Get current playback position in seconds."""
-        if not self.is_playing:
+        if not self.is_playing and not pygame.mixer.music.get_busy():
             return 0.0
         # get_pos returns milliseconds since play started
         # Note: This resets on pause/unpause in some versions, but usually accurate enough for simple UI
         try:
-            return pygame.mixer.music.get_pos() / 1000.0
+            pos_ms = pygame.mixer.music.get_pos()
+            if pos_ms >= 0:
+                return pos_ms / 1000.0
+            return 0.0
         except:
             return 0.0
+    
+    def seek(self, position_seconds):
+        """
+        Seek to a specific position in the song.
+        
+        Args:
+            position_seconds: Position to seek to in seconds
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.current_song:
+            return False
+        
+        try:
+            # Clamp position to valid range
+            position_seconds = max(0, min(position_seconds, self._duration))
+            
+            # For WAV files (our M4A transcodes), we need to rewind first then set_pos
+            was_playing = self.is_playing
+            
+            # Stop and reload the song
+            pygame.mixer.music.stop()
+            pygame.mixer.music.rewind()
+            
+            # Set position (for WAV this works after rewind)
+            if position_seconds > 0:
+                pygame.mixer.music.set_pos(position_seconds)
+            
+            # Resume playing if it was playing before
+            if was_playing:
+                pygame.mixer.music.play()
+                self.is_playing = True
+            
+            logger.info(f"Seeked to {position_seconds:.1f}s")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error seeking: {e}")
+            # Try to resume playback if it was playing
+            if was_playing:
+                try:
+                    pygame.mixer.music.play()
+                    self.is_playing = True
+                except:
+                    pass
+            return False
 
     def load_song(self, file_path):
         """Load a song from file path."""

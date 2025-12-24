@@ -204,19 +204,25 @@ class SongRecommender:
         self.model.fit(X)
         logger.info("Model training complete")
     
-    def find_similar_songs(self, song_path: str, n_songs: int = 5) -> pd.DataFrame:
+    def find_similar_songs(self, song_path: str, n_songs: int = 5, exclude_paths: List[str] = None) -> pd.DataFrame:
         """
         Find songs similar to the given song.
         
         Args:
             song_path: Path to the query song (can be full path or just filename)
             n_songs: Number of similar songs to return
+            exclude_paths: List of song paths to exclude from recommendations (e.g., recently played)
             
         Returns:
             DataFrame containing similar songs and their similarity scores
         """
         if self.features_df is None or self.model is None:
             raise ValueError("Features and model must be loaded before finding similar songs")
+        
+        # Normalize exclude paths for comparison
+        if exclude_paths is None:
+            exclude_paths = []
+        exclude_paths = [os.path.abspath(p) if os.path.exists(p) else p for p in exclude_paths]
         
         # Ensure file_path is treated as string
         self.features_df['file_path'] = self.features_df['file_path'].astype(str)
@@ -257,9 +263,13 @@ class SongRecommender:
             # We assume n_components is consistent with how the model was trained (stored in self.pca)
             features = self.preprocess_features(n_components=self.pca.n_components if self.pca else None)
             
+            # Request extra neighbors to account for excluded songs
+            # We'll ask for 3x the needed amount to ensure we have enough after filtering
+            n_neighbors_requested = min(n_songs * 3 + 1, len(self.features_df))
+            
             distances, indices = self.model.kneighbors(
                 features[song_idx].reshape(1, -1),
-                n_neighbors=min(n_songs + 1, len(self.features_df))  # Ensure we don't ask for more than we have
+                n_neighbors=n_neighbors_requested
             )
             
             # Get the similar songs (skip the first one as it's the query song itself)
@@ -269,6 +279,22 @@ class SongRecommender:
             # Create result DataFrame
             result = self.features_df.iloc[similar_indices].copy()
             result['similarity_score'] = similar_distances
+            
+            # Filter out excluded songs
+            if exclude_paths:
+                # Normalize paths in the result dataframe for comparison
+                result_paths_normalized = result['file_path'].apply(
+                    lambda p: os.path.abspath(p) if os.path.exists(p) else p
+                )
+                
+                # Create mask for non-excluded songs
+                mask = ~result_paths_normalized.isin(exclude_paths)
+                result = result[mask]
+                
+                logger.debug(f"Filtered out {(~mask).sum()} excluded songs from recommendations")
+            
+            # Limit to requested number of songs
+            result = result.head(n_songs)
             
             # Sort by similarity (descending)
             result = result.sort_values('similarity_score', ascending=False)
