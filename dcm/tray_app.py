@@ -148,7 +148,16 @@ def load_recommendations():
                 logger.warning(f"Features file not found: {features_path}")
                 return
         
-        similar = state.recommender.find_similar_songs(state.current_song_path, n_songs=5)
+        
+        # Get recommendations, excluding recently played songs to prevent loops
+        # Exclude the last 50 songs from history to ensure variety
+        exclude_list = state.play_history[-50:] if len(state.play_history) > 0 else []
+        
+        similar = state.recommender.find_similar_songs(
+            state.current_song_path, 
+            n_songs=10,  # Request more to have options after filtering
+            exclude_paths=exclude_list
+        )
         state.recommendations = []
         for _, row in similar.iterrows():
             if row['file_path'] != state.current_song_path:
