@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pystray
 from PIL import Image, ImageDraw
+import pygame  # For checking music playback status
 
 from dcm.player import player
 from dcm.core.metadata import get_metadata
@@ -30,8 +31,16 @@ class AppState:
     auto_queue = False
     loop_current = False  # Loop current song
     recommender = None
-    recommendations = []
+    recommendations = []  # Top 5 for display
     play_history = []  # History of played songs for "Previous" button
+    
+    # Queue system
+    queue = []  # Full queue of up to 10 songs
+    queue_index = 0  # Current position in queue
+    songs_played_since_refresh = 0  # Counter for auto-refresh
+    
+    # Tray icon reference (for updating menu)
+    icon = None
 
 state = AppState()
 
@@ -125,12 +134,16 @@ def play_song(file_path):
         
         # Load recommendations in background
         threading.Thread(target=load_recommendations, daemon=True).start()
+        
+        # Rebuild tray menu to reflect new song
+        if state.icon:
+            state.icon.menu = build_menu()
     else:
         logger.error(f"Failed to play: {file_path}")
 
-def load_recommendations():
-    """Load recommendations for the current song."""
-    if not state.current_song_path:
+def build_queue_from_seed(seed_song_path):
+    """Build a queue of 10 songs starting from a seed song."""
+    if not seed_song_path:
         return
     
     try:
@@ -148,30 +161,57 @@ def load_recommendations():
                 logger.warning(f"Features file not found: {features_path}")
                 return
         
-        
-        # Get recommendations, excluding recently played songs to prevent loops
-        # Exclude the last 50 songs from history to ensure variety
+        # Get recommendations, excluding recently played songs
         exclude_list = state.play_history[-50:] if len(state.play_history) > 0 else []
         
         similar = state.recommender.find_similar_songs(
-            state.current_song_path, 
-            n_songs=10,  # Request more to have options after filtering
+            seed_song_path, 
+            n_songs=15,  # Request more than 10 to have options after filtering
             exclude_paths=exclude_list
         )
-        state.recommendations = []
+        
+        # Build queue from recommendations
+        state.queue = []
         for _, row in similar.iterrows():
-            if row['file_path'] != state.current_song_path:
-                meta = get_metadata(row['file_path'])
-                state.recommendations.append({
+            if row['file_path'] != seed_song_path and len(state.queue) < 10:
+                state.queue.append({
                     'path': row['file_path'],
-                    'title': meta.get('title', os.path.basename(row['file_path'])),
+                    'title': get_metadata(row['file_path']).get('title', os.path.basename(row['file_path'])),
                     'similarity': row['similarity_score']
                 })
-        logger.info(f"Loaded {len(state.recommendations)} recommendations")
+        
+        state.queue_index = 0
+        state.songs_played_since_refresh = 0
+        
+        # Also populate recommendations (top 5) for menu display
+        state.recommendations = state.queue[:5] if state.queue else []
+        
+        logger.info(f"Built queue with {len(state.queue)} songs")
     except Exception as e:
-        logger.error(f"Error loading recommendations: {e}")
+        logger.error(f"Error building queue: {e}")
+
+def refresh_queue_if_needed():
+    """Refresh queue if 6 songs have been played since last refresh."""
+    if state.songs_played_since_refresh >= 6 and len(state.queue) > 0:
+        # Use current song as new seed
+        if state.current_song_path:
+            logger.info(f"Refreshing queue (played {state.songs_played_since_refresh} songs)")
+            build_queue_from_seed(state.current_song_path)
+
+def load_recommendations():
+    """Legacy function - now builds queue instead."""
+    if state.current_song_path:
+        build_queue_from_seed(state.current_song_path)
 
 # --- Menu Building ---
+def format_time(seconds):
+    """Format seconds as MM:SS."""
+    if seconds <= 0:
+        return "0:00"
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{mins}:{secs:02d}"
+
 def get_now_playing_text(item):
     """Get the 'Now Playing' text for the menu."""
     if state.current_song_path and player.is_playing:
@@ -181,8 +221,17 @@ def get_now_playing_text(item):
             return f"🎵 {title} - {artist}"
         return f"🎵 {title}"
     elif state.current_song_path:
-        return "⏸️ Paused"
-    return "No song playing"
+        title = state.current_song_meta.get('title', 'Unknown')
+        return f"⏸️ {title} (Paused)"
+    return "♪ No song playing"
+
+def get_progress_text(item):
+    """Get the progress text showing current time / total time."""
+    if state.current_song_path:
+        current = format_time(player.current_position)
+        total = format_time(player.duration)
+        return f"⏱️ {current} / {total}"
+    return "⏱️ --:-- / --:--"
 
 def toggle_play_pause(icon, item):
     """Toggle play/pause."""
@@ -190,6 +239,15 @@ def toggle_play_pause(icon, item):
         player.pause()
     elif state.current_song_path:
         player.unpause()
+
+def seek_to_position(percentage):
+    """Create a seek handler for a specific percentage."""
+    def handler(icon, item):
+        if state.current_song_path and player.duration > 0:
+            position = (percentage / 100.0) * player.duration
+            player.seek(position)
+            logger.info(f"Seeked to {percentage}% ({format_time(position)})")
+    return handler
 
 def toggle_auto_queue(icon, item):
     """Toggle auto-queue feature."""
@@ -232,10 +290,26 @@ def play_recommendation(path):
 
 def build_menu():
     """Build the tray menu."""
+    # Build seek submenu
+    seek_items = [
+        pystray.MenuItem("Start (0%)", seek_to_position(0)),
+        pystray.MenuItem("25%", seek_to_position(25)),
+        pystray.MenuItem("50%", seek_to_position(50)),
+        pystray.MenuItem("75%", seek_to_position(75)),
+        pystray.MenuItem("End (100%)", seek_to_position(100)),
+    ]
+    
     menu_items = [
         pystray.MenuItem("📁 Open Song...", lambda icon, item: open_file_dialog()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(get_now_playing_text, None, enabled=False),
+        # Progress timer removed - will be in mini player
+        pystray.MenuItem(
+            "⏩ Seek to...",
+            pystray.Menu(*seek_items),
+            enabled=lambda item: state.current_song_path is not None and player.duration > 0
+        ),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem(
             "⏯️ Play/Pause", 
             toggle_play_pause,
@@ -266,17 +340,32 @@ def build_menu():
     ]
     
     # Add recommendations submenu
-    if state.recommendations:
-        rec_items = []
-        for rec in state.recommendations[:5]:
-            title = rec['title'][:30] + "..." if len(rec['title']) > 30 else rec['title']
-            score = f"{int(rec['similarity'] * 100)}%"
-            rec_items.append(
-                pystray.MenuItem(f"  {title} ({score})", play_recommendation(rec['path']))
+    # Add queue/recommendations display - Show queue when Auto-Queue is enabled
+    if state.auto_queue and state.queue and len(state.queue) > 0:
+        queue_items = []
+        # Show current position indicator
+        queue_items.append(pystray.MenuItem(f"[Playing #{state.queue_index + 1} of {len(state.queue)}]", None, enabled=False))
+        queue_items.append(pystray.Menu.SEPARATOR)
+        
+        # Show all songs in queue (up to 10)
+        for i, song in enumerate(state.queue):
+            title = song['title'][:35] + "..." if len(song['title']) > 35 else song['title']
+            # Mark currently playing song
+            if i == state.queue_index:
+                prefix = "▶"
+            else:
+                prefix = f"{i + 1}."
+            queue_items.append(
+                pystray.MenuItem(f"{prefix} {title}", play_recommendation(song['path']))
             )
-        menu_items.append(pystray.MenuItem("📋 Up Next:", pystray.Menu(*rec_items)))
+        
+        menu_items.append(pystray.MenuItem("📋 Queue", pystray.Menu(*queue_items)))
     else:
-        menu_items.append(pystray.MenuItem("📋 Up Next: (play a song first)", None, enabled=False))
+        # Show instruction when Auto-Queue is off
+        if state.auto_queue:
+            menu_items.append(pystray.MenuItem("📋 Queue: (play a song first)", None, enabled=False))
+        else:
+            menu_items.append(pystray.MenuItem("📋 Queue: (enable Auto-Queue)", None, enabled=False))
     
     menu_items.extend([
         pystray.Menu.SEPARATOR,
@@ -290,20 +379,46 @@ def auto_queue_monitor():
     """Monitor playback and auto-queue next song when current ends."""
     import time
     last_song = None
+    was_playing = False
     
     while True:
-        time.sleep(1)
+        time.sleep(0.5)  # Check more frequently
         
         if state.auto_queue and state.current_song_path:
-            # Check if song ended (not playing but we have a current song)
-            if not player.is_playing and state.current_song_path == last_song:
-                # Song likely ended, queue next
-                if state.recommendations:
-                    next_song = state.recommendations[0]['path']
-                    logger.info(f"Auto-Queue: Playing next - {next_song}")
-                    play_song(next_song)
+            # Check if music is actually playing using pygame's get_busy()
+            is_busy = pygame.mixer.music.get_busy()
             
-            last_song = state.current_song_path if player.is_playing else last_song
+            # Detect song end: was playing before, now not busy, same song
+            if was_playing and not is_busy and state.current_song_path == last_song:
+                # Song has ended, play next from queue
+                logger.info("Song ended, auto-queueing next...")
+                
+                # Increment counters
+                state.queue_index += 1
+                state.songs_played_since_refresh += 1
+                
+                # Check if we need to refresh queue
+                refresh_queue_if_needed()
+                
+                # Play next song from queue
+                if state.queue and state.queue_index < len(state.queue):
+                    next_song = state.queue[state.queue_index]
+                    logger.info(f"Playing next from queue [{state.queue_index + 1}/{len(state.queue)}]: {next_song['title']}")
+                    play_song(next_song['path'])
+                elif state.queue:  # Queue exists but we're at the end
+                    # Loop back to start
+                    logger.info("Reached end of queue, restarting...")
+                    state.queue_index = 0
+                    play_song(state.queue[0]['path'])
+                else:
+                    logger.warning("No queue available")
+                
+                was_playing = False
+                last_song = None
+            elif is_busy:
+                # Song is playing
+                was_playing = True
+                last_song = state.current_song_path
 
 # --- Main Entry Point ---
 def main():
@@ -321,6 +436,9 @@ def main():
         "DCM Music Player",
         menu=build_menu()
     )
+    
+    # Store icon reference for menu updates
+    state.icon = icon
     
     # Run the icon (this blocks)
     icon.run()
