@@ -252,12 +252,32 @@ def seek_to_position(percentage):
 def toggle_auto_queue(icon, item):
     """Toggle auto-queue feature."""
     state.auto_queue = not state.auto_queue
+    
+    # If turning on Auto-Queue, turn off Loop
+    if state.auto_queue and state.loop_current:
+        state.loop_current = False
+        logger.info("Loop disabled (Auto-Queue enabled)")
+    
     logger.info(f"Auto-Queue: {'ON' if state.auto_queue else 'OFF'}")
+    
+    # Rebuild menu to reflect changes
+    if state.icon:
+        state.icon.menu = build_menu()
 
 def toggle_loop(icon, item):
     """Toggle loop current song."""
     state.loop_current = not state.loop_current
+    
+    # If turning on Loop, turn off Auto-Queue
+    if state.loop_current and state.auto_queue:
+        state.auto_queue = False
+        logger.info("Auto-Queue disabled (Loop enabled)")
+    
     logger.info(f"Loop: {'ON' if state.loop_current else 'OFF'}")
+    
+    # Rebuild menu to reflect changes
+    if state.icon:
+        state.icon.menu = build_menu()
 
 def play_next(icon, item):
     """Play the next recommended song."""
@@ -384,14 +404,23 @@ def auto_queue_monitor():
     while True:
         time.sleep(0.5)  # Check more frequently
         
-        if state.auto_queue and state.current_song_path:
-            # Check if music is actually playing using pygame's get_busy()
-            is_busy = pygame.mixer.music.get_busy()
+        # Check if music is actually playing using pygame's get_busy()
+        is_busy = pygame.mixer.music.get_busy()
+        
+        # Detect song end: was playing before, now not busy, same song
+        if was_playing and not is_busy and state.current_song_path == last_song:
+            # Song has ended
+            logger.info("Song ended")
             
-            # Detect song end: was playing before, now not busy, same song
-            if was_playing and not is_busy and state.current_song_path == last_song:
-                # Song has ended, play next from queue
-                logger.info("Song ended, auto-queueing next...")
+            # Handle based on mode: Loop takes precedence over Auto-Queue
+            if state.loop_current:
+                # Loop: replay the same song
+                logger.info("Looping current song")
+                if state.current_song_path:
+                    player.play(state.current_song_path)
+            elif state.auto_queue:
+                # Auto-Queue: play next from queue
+                logger.info("Auto-queueing next...")
                 
                 # Increment counters
                 state.queue_index += 1
@@ -412,13 +441,14 @@ def auto_queue_monitor():
                     play_song(state.queue[0]['path'])
                 else:
                     logger.warning("No queue available")
-                
-                was_playing = False
-                last_song = None
-            elif is_busy:
-                # Song is playing
-                was_playing = True
-                last_song = state.current_song_path
+            # else: neither Loop nor Auto-Queue - do nothing, song ends normally
+            
+            was_playing = False
+            last_song = None
+        elif is_busy:
+            # Song is playing
+            was_playing = True
+            last_song = state.current_song_path
 
 # --- Main Entry Point ---
 def main():
