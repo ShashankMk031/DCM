@@ -1,15 +1,7 @@
 # DCM - AI-Powered Music Recommendation System
 
-<div align="center">
-
-![DCM Logo](assets/icon.png)
-
-**Intelligent music recommendations using audio feature analysis and machine learning**
-
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-</div>
 
 ---
 
