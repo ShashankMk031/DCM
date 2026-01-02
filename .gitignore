@@ -92,4 +92,8 @@ htmlcov/
 
 
 #pyenv local 
-.python-version
+.python-version/tmp/transcoded_wav/
+.gemini/
+/tmp/transcoded_wav/
+.gemini/
+dist_linux/
