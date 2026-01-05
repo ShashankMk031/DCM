@@ -408,8 +408,18 @@ def auto_queue_monitor():
         is_busy = pygame.mixer.music.get_busy()
         
         # Detect song end: was playing before, now not busy, same song
+        # BUT: Don't trigger if player.is_playing is False (means paused, not ended)
+        # When paused: player.is_playing = False (set by pause())
+        # When natural end: player.is_playing might still be True (not yet updated)
+        # So we check: if player.is_playing is False, it's paused; if True, it might be natural end
         if was_playing and not is_busy and state.current_song_path == last_song:
-            # Song has ended
+            # Check if this is a pause (player.is_playing is False) or natural end (player.is_playing is True)
+            if not player.is_playing:
+                # This is a pause, not an end - reset was_playing to prevent false trigger
+                was_playing = False
+                continue
+            
+            # Song has ended naturally (player.is_playing is still True but pygame is not busy)
             logger.info("Song ended")
             
             # Handle based on mode: Loop takes precedence over Auto-Queue
