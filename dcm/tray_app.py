@@ -214,15 +214,32 @@ def format_time(seconds):
 
 def get_now_playing_text(item):
     """Get the 'Now Playing' text for the menu."""
+    MAX_LENGTH = 50  # Maximum length for menu item text
+    
     if state.current_song_path and player.is_playing:
         title = state.current_song_meta.get('title', 'Unknown')
         artist = state.current_song_meta.get('artist', '')
+        
         if artist:
-            return f"🎵 {title} - {artist}"
-        return f"🎵 {title}"
+            full_text = f"🎵 {title} - {artist}"
+        else:
+            full_text = f"🎵 {title}"
+        
+        # Truncate if too long (simple truncation with ellipsis)
+        if len(full_text) > MAX_LENGTH:
+            full_text = full_text[:MAX_LENGTH-3] + "..."
+        
+        return full_text
     elif state.current_song_path:
         title = state.current_song_meta.get('title', 'Unknown')
-        return f"⏸️ {title} (Paused)"
+        paused_text = f"⏸️ {title} (Paused)"
+        
+        # Truncate if too long
+        if len(paused_text) > MAX_LENGTH:
+            paused_text = paused_text[:MAX_LENGTH-3] + "..."
+        
+        return paused_text
+    
     return "♪ No song playing"
 
 def get_progress_text(item):
